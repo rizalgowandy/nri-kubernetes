@@ -10,7 +10,12 @@ import (
 
 	model "github.com/prometheus/client_model/go"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
+)
+
+var (
+	ErrExpectedLabelsNotFound = errors.New("expected labels not found")
+	ErrUnexpectedEmptyLabels  = errors.New("unexpected empty labels")
 )
 
 // ControlPlaneComponentTypeGenerator generates the entity type of a
@@ -35,40 +40,54 @@ var FromRawEntityIDGenerator = func(_, rawEntityID string, _ definition.RawGroup
 // If group label is "container" then pod name is also included.
 func FromLabelValueEntityTypeGenerator(key string) definition.EntityTypeGeneratorFunc {
 	return func(groupLabel string, rawEntityID string, g definition.RawGroups, clusterName string) (string, error) {
-		switch groupLabel {
-		case "namespace", "node":
-			return fmt.Sprintf("k8s:%s:%s", clusterName, groupLabel), nil
+		return defaultEntityTypeFromLabelValue(key, groupLabel, groupLabel, rawEntityID, g, clusterName)
+	}
+}
 
-		case "container":
-			labels, err := getLabels(groupLabel, rawEntityID, key, g, "namespace", "pod")
-			if err != nil {
-				return "", err
-			}
-			if len(labels) != 2 {
-				return "", fmt.Errorf("cannot retrieve values for composing entity type for %q", groupLabel)
-			}
-			namespace := labels[0]
-			podName := labels[1]
-			if namespace == "" || podName == "" {
-				return "", fmt.Errorf("empty values for generated entity type for %q", groupLabel)
-			}
-			return fmt.Sprintf("k8s:%s:%s:%s:%s", clusterName, namespace, podName, groupLabel), nil
+// FromLabelValueEntityTypeGeneratorWithCustomGroup generates the entity type in the same way
+// `FromLabelValueEntityTypeGenerator` does, but it uses the provided group instead of the group label to compose it.
+func FromLabelValueEntityTypeGeneratorWithCustomGroup(key string, group string) definition.EntityTypeGeneratorFunc {
+	return func(groupLabel string, rawEntityID string, g definition.RawGroups, clusterName string) (string, error) {
+		return defaultEntityTypeFromLabelValue(key, group, groupLabel, rawEntityID, g, clusterName)
+	}
+}
 
-		default:
-			labels, err := getLabels(groupLabel, rawEntityID, key, g, "namespace")
-			if err != nil {
-				return "", err
-			}
-			if len(labels) == 0 {
-				return "", fmt.Errorf("cannot retrieve values for composing entity type for %q", groupLabel)
-			}
-			namespace := labels[0]
+func defaultEntityTypeFromLabelValue( //nolint: cyclop
+	key string, group, groupLabel string, rawEntityID string, g definition.RawGroups, clusterName string,
+) (string, error) {
+	switch groupLabel {
+	case "namespace", "node", "persistentvolume": //nolint: goconst
+		return fmt.Sprintf("k8s:%s:%s", clusterName, group), nil
 
-			if namespace == "" {
-				return "", fmt.Errorf("empty namespace for generated entity type for %q", groupLabel)
-			}
-			return fmt.Sprintf("k8s:%s:%s:%s", clusterName, namespace, groupLabel), nil
+	case "container":
+		labels, err := getLabels(groupLabel, rawEntityID, key, g, "namespace", "pod")
+		if err != nil {
+			return "", err
 		}
+		if neededLabels := 2; len(labels) != neededLabels {
+			return "", fmt.Errorf("%w: cannot retrieve values for composing entity type for %q", ErrExpectedLabelsNotFound, groupLabel)
+		}
+		namespace := labels[0]
+		podName := labels[1]
+		if namespace == "" || podName == "" {
+			return "", fmt.Errorf("%w: empty values for generated entity type for %q", ErrUnexpectedEmptyLabels, groupLabel)
+		}
+		return fmt.Sprintf("k8s:%s:%s:%s:%s", clusterName, namespace, podName, group), nil
+
+	default:
+		labels, err := getLabels(groupLabel, rawEntityID, key, g, "namespace")
+		if err != nil {
+			return "", err
+		}
+		if len(labels) == 0 {
+			return "", fmt.Errorf("%w: cannot retrieve values for composing entity type for %q", ErrExpectedLabelsNotFound, groupLabel)
+		}
+		namespace := labels[0]
+
+		if namespace == "" {
+			return "", fmt.Errorf("%w: empty values for generated entity type for %q", ErrUnexpectedEmptyLabels, groupLabel)
+		}
+		return fmt.Sprintf("k8s:%s:%s:%s", clusterName, namespace, group), nil
 	}
 }
 
@@ -137,6 +156,16 @@ func FromLabelsValueEntityIDGeneratorForPendingPods() definition.EntityIDGenerat
 	}
 }
 
+func FromLabelGetNamespace(metrics definition.RawMetrics) string {
+	for _, metric := range metrics {
+		m, ok := metric.(Metric)
+		if ok && m.Labels["namespace"] != "" {
+			return m.Labels["namespace"]
+		}
+	}
+	return ""
+}
+
 // GroupEntityMetricsBySpec groups metrics coming from Prometheus by the
 // given rawEntityID and metric spec.
 //
@@ -150,13 +179,14 @@ func FromLabelsValueEntityIDGeneratorForPendingPods() definition.EntityIDGenerat
 // example is querying the metrics endpoint of a control plane component.
 //
 // The resulting RawGroups are of the form:
-// {
-//   groupLabel: {
-//     rawEntityID: {
-//       metric_name: [ Metric1, Metric2, ..., Metricn ]
-//     }
-//   }
-// }
+//
+//	{
+//	  groupLabel: {
+//	    rawEntityID: {
+//	      metric_name: [ Metric1, Metric2, ..., Metricn ]
+//	    }
+//	  }
+//	}
 func GroupEntityMetricsBySpec(
 	specs definition.SpecGroups,
 	families []MetricFamily,
@@ -304,6 +334,24 @@ func IncludeOnlyLabelsFilter(labelsToInclude ...string) func(Labels) Labels {
 	}
 }
 
+// IncludeOnlyWhenLabelMatchFilter returns a function that filters-out all but the
+// given label-value key pairs.
+func IncludeOnlyWhenLabelMatchFilter(labelsToInclude Labels) func(Labels) Labels {
+	return func(labels Labels) Labels {
+		filteredLabels := make(Labels)
+		for label, value := range labels {
+			for labelToInclude, valueToInclude := range labelsToInclude {
+				if label == labelToInclude && value == valueToInclude {
+					filteredLabels[label] = value
+					break
+				}
+			}
+		}
+
+		return filteredLabels
+	}
+}
+
 // attributeName generates the attribute name by suffixing the time-series
 // labels to the given metricName in order.
 func attributeName(metricName, nameOverride string, labels Labels, labelsFilter ...LabelsFilter) string {
@@ -327,16 +375,18 @@ func attributeName(metricName, nameOverride string, labels Labels, labelsFilter 
 // Given a `metricName=my_metric` and the following `metrics`:
 //
 // [
-//   {Value: 4, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "b"}]},
-//   {Value: 6, Labels: [{Name: "l1", Value: "c"}, {Name: "l2", Value: "d"}]}
+//
+//	{Value: 4, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "b"}]},
+//	{Value: 6, Labels: [{Name: "l1", Value: "c"}, {Name: "l2", Value: "d"}]}
+//
 // ]
 //
 // The following `FetchedValues` will be returned:
 //
-// {
-//    "my_metric_l1_a_l2_b": 4,
-//    "my_metric_l1_c_l2_d": 6
-// }
+//	{
+//	   "my_metric_l1_a_l2_b": 4,
+//	   "my_metric_l1_c_l2_d": 6
+//	}
 //
 // The labels used in generating the resulting metrics names can be filtered
 // by using `LabelsFilter`. In the case where multiple metrics generate the
@@ -345,17 +395,19 @@ func attributeName(metricName, nameOverride string, labels Labels, labelsFilter 
 // Given a `metricName=my_metric` the following `metrics`:
 //
 // [
-//   {Value: 4, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "b"}]},
-//   {Value: 6, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "d"}]}
+//
+//	{Value: 4, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "b"}]},
+//	{Value: 6, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "d"}]}
+//
 // ]
 //
 // And using IgnoreLabelsFilter("l2") to filter the `l2` label
 //
 // The following `FetchedValues` will be returned:
 //
-// {
-//    "my_metric_l1_a": 10,
-// }
+//	{
+//	   "my_metric_l1_a": 10,
+//	}
 func fetchedValuesFromRawMetrics(
 	metricName string,
 	nameOverride string,
@@ -372,28 +424,12 @@ func fetchedValuesFromRawMetrics(
 			continue
 		}
 
-		switch metric.Value.(type) {
-		case CounterValue:
-			aggregatedCounter, ok := aggregatedValue.(CounterValue)
-			if !ok {
-				return nil, fmt.Errorf(
-					"incompatible metric type for %s aggregation. Expected: CounterValue. Got: %T",
-					metricName,
-					metric.Value,
-				)
-			}
-			val[attrName] = aggregatedCounter + metric.Value.(CounterValue)
-		case GaugeValue:
-			aggregatedCounter, ok := aggregatedValue.(GaugeValue)
-			if !ok {
-				return nil, fmt.Errorf(
-					"incompatible metric type for %s aggregation. Expected: GaugeValue. Got: %T",
-					metricName,
-					metric.Value,
-				)
-			}
-			val[attrName] = aggregatedCounter + metric.Value.(GaugeValue)
+		value, err := getMetricValue(metricName, aggregatedValue, metric)
+		if err != nil {
+			return nil, err
 		}
+
+		val[attrName] = value
 	}
 	return val, nil
 }
@@ -528,6 +564,120 @@ func FromSummary(key string) definition.FetchFunc {
 		}
 		return val, nil
 	}
+}
+
+// FromValueWithLabelsFilter creates a FetchFunc that fetches values from prometheus metrics values given specific
+// labels filter.
+func FromValueWithLabelsFilter(metricName string, nameOverride string, labelsFilter ...LabelsFilter) definition.FetchFunc {
+	return func(groupLabel, entityID string, groups definition.RawGroups) (definition.FetchedValue, error) {
+		value, err := definition.FromRaw(metricName)(groupLabel, entityID, groups)
+		if err != nil {
+			return nil, err
+		}
+
+		switch m := value.(type) {
+		case Metric:
+			return m.Value, nil
+		case []Metric:
+			return fetchedValuesFromRawMetricsWithLabels(metricName, nameOverride, m, labelsFilter...)
+		}
+		return nil, fmt.Errorf(
+			"incompatible metric type for %s. Expected: Metric or []Metric. Got: %T",
+			metricName,
+			value,
+		)
+	}
+}
+
+// fetchedValuesFromRawMetricsWithLabels generates a mapping of metrics to `FetchedValue` by metricName or nameOverride
+// if provided and skips the metrics aggregation if there are no matching labels for that metric.
+// In case there aren't any matching filters, the function won't return any value.
+//
+// Given a `metricName=my_metric`, a label filter function returning `l3:d` and the following `metrics`:
+//
+// [
+//
+//	{Value: 4, Labels: [{Name: "l1", Value: "a"}, {Name: "l2", Value: "b"}]},
+//	{Value: 6, Labels: [{Name: "l1", Value: "c"}, {Name: "l3", Value: "d"}]}
+//
+// ]
+//
+// The following `FetchedValues` will be returned:
+//
+//	{
+//	   "my_metric": 6,
+//	}
+func fetchedValuesFromRawMetricsWithLabels(
+	metricName string,
+	nameOverride string,
+	metrics []Metric,
+	labelsFilter ...LabelsFilter,
+) (definition.FetchedValues, error) {
+	val := make(definition.FetchedValues)
+	for _, metric := range metrics {
+		if !hasMatchingLabels(metric, labelsFilter...) {
+			continue
+		}
+
+		if nameOverride != "" {
+			metricName = nameOverride
+		}
+
+		aggregatedValue, ok := val[metricName]
+		if !ok {
+			val[metricName] = metric.Value
+			continue
+		}
+
+		value, err := getMetricValue(metricName, aggregatedValue, metric)
+		if err != nil {
+			return nil, err
+		}
+
+		val[metricName] = value
+	}
+
+	return val, nil
+}
+
+// hasMatchingLabels checks if a metric has any matching label given a list of labels filter funcs.
+func hasMatchingLabels(metric Metric, labelsFilter ...LabelsFilter) bool {
+	labels := copyMapLabels(metric.Labels)
+	for _, filter := range labelsFilter {
+		labels = filter(labels)
+	}
+
+	return len(labels) != 0
+}
+
+// getMetricValue return the value of a given metric taking into account the aggregated and the metric value itself.
+func getMetricValue(metricName string, aggregatedValue definition.FetchedValue, metric Metric) (definition.FetchedValue, error) {
+	var value definition.FetchedValue
+
+	switch metric.Value.(type) {
+	case CounterValue:
+		aggregatedCounter, ok := aggregatedValue.(CounterValue)
+		if !ok {
+			return nil, fmt.Errorf(
+				"incompatible metric type for %s aggregation. Expected: CounterValue. Got: %T",
+				metricName,
+				metric.Value,
+			)
+		}
+		value = aggregatedCounter + metric.Value.(CounterValue)
+	case GaugeValue:
+		aggregatedCounter, ok := aggregatedValue.(GaugeValue)
+		if !ok {
+			return nil, fmt.Errorf(
+				"incompatible metric type for %s aggregation. Expected: GaugeValue. Got: %T",
+				metricName,
+				metric.Value,
+			)
+		}
+		value = aggregatedCounter + metric.Value.(GaugeValue)
+	}
+
+	return value, nil
 }
 
 // validNRValue returns if v is a New Relic metric supported float64.
@@ -725,4 +875,12 @@ func getRawEntityID(parentGroupLabel, groupLabel, entityID string, groups defini
 		rawEntityID = fmt.Sprintf("%v_%v", namespaceID, relatedMetricID)
 	}
 	return rawEntityID, nil
+}
+
+func copyMapLabels(labels Labels) Labels {
+	targetMap := make(Labels)
+	for key, value := range labels {
+		targetMap[key] = value
+	}
+	return targetMap
 }

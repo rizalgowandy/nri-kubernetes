@@ -1,0 +1,27 @@
+{{- if .Values.persistentVolume.enabled }}
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Release.Name }}-pv-storage
+spec:
+  storageClassName: {{ .Release.Name }}-pv-class
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 5Mi
+  volumeMode: Filesystem
+  {{- if .Values.persistentVolume.multiNode }}
+  local:
+    path: /mnt/
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: Exists
+  {{- else }}
+  hostPath:
+    path: /mnt/
+    type: DirectoryOrCreate
+  {{- end }}
+{{- end }}

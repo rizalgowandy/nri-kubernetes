@@ -1,57 +1,70 @@
 name: E2E over minikube
 
 on:
+  pull_request:
+    branches-ignore:
+      - v2
   push:
     branches:
-      - "main"
-  pull_request:
+      - main
+      - renovate/**
 
 jobs:
   e2eTests:
-    runs-on: ubuntu-20.04
+    # Do not run e2e tests if commit message or PR has skip-e2e.
+    if: ${{ ! contains(github.event.pull_request.labels.*.name, 'ci/skip-e2e') }}
+    runs-on: ubuntu-latest
     strategy:
-      max-parallel: 4 # len(k8sVersion)/2 is a good number to have here
+      max-parallel: 6 # len(k8sVersion)/2 is a good number to have here
       matrix:
         # Latest patch version can be found in https://github.com/kubernetes/website/blob/main/content/en/releases/patch-releases.md
         # Some versions might not be available yet in https://storage.googleapis.com/kubernetes-release/release/v1.X.Y/bin/linux/amd64/kubelet
-        k8sVersion: [ "v1.16.15", "v1.17.17", "v1.18.20", "v1.19.14", "v1.20.10", "v1.21.4", "v1.22.0" ]
+        k8sVersion: ["v1.31.0", "v1.30.0", "v1.29.5", "v1.28.3", "v1.27.5"]
+        cri: [ containerd ]
     env:
       DOCKER_BUILDKIT: '1' # Setting DOCKER_BUILDKIT=1 ensures TARGETOS and TARGETARCH are populated
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: '1.17'
+          go-version-file: 'go.mod'
       - name: Setup Minikube
-        uses: manusa/actions-setup-minikube@v2.4.2
+        uses: manusa/actions-setup-minikube@v2.13.1
         with:
-          minikube version: v1.23.2
+          minikube version: v1.35.0
           kubernetes version: ${{ matrix.k8sVersion }}
           driver: docker
-          start args: "--nodes=2"
+          start args: "--container-runtime=${{ matrix.cri }}"
       - name: Enable addons minikube needed for HPA
         run: |
           minikube addons enable metrics-server
       - name: Compile, Build and load Images
         run: |
           GOOS=linux GOARCH=amd64 make compile # Set GOOS and GOARCH explicitly since Dockerfile expects them in the binary name
-          docker build -t e2e/newrelic-infrastructure:e2e --build-arg 'MODE=normal' .
-          docker build -t e2e/newrelic-infrastructure:e2e-unprivileged --build-arg 'MODE=unprivileged' .
-          minikube image load e2e/newrelic-infrastructure:e2e
-          minikube image load e2e/newrelic-infrastructure:e2e-unprivileged
+          docker build -t e2e/nri-kubernetes:e2e  .
+          minikube image load e2e/nri-kubernetes:e2e
       - name: Setup Helm
         run: |
           chmod go-r /home/runner/.kube/config
-          helm repo add stable https://charts.helm.sh/stable
           helm repo add newrelic https://helm-charts.newrelic.com
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
+      - name: Select metrics exception file
+        id: exceptions-version
+        run: |
+          MINOR=$(echo "${{ matrix.k8sVersion }}" | sed -n 's/v\([0-9]\)\.\([0-9][0-9]*\)\.[0-9].*/\1_\2/p')
+          
+          echo $MINOR
+          echo "exceptions=$MINOR" >> $GITHUB_OUTPUT
       - name: Run e2e-test
         uses: newrelic/newrelic-integration-e2e-action@v1
+        env:
+          EXCEPTIONS_SOURCE_FILE: ${{ steps.exceptions-version.outputs.exceptions }}-exceptions.yml
         with:
           retry_seconds: 60
           retry_attempts: 5
           agent_enabled: false
           spec_path: e2e/test-specs.yml
-          account_id: ${{ secrets.COREINT_E2E_ACCOUNT_ID }}
-          api_key: ${{ secrets.COREINT_E2E_API_KEY }}
-          license_key: ${{ secrets.COREINT_E2E_LICENSE_KEY }}
+          account_id: ${{ secrets.K8S_AGENTS_E2E_ACCOUNT_ID }}
+          api_key: ${{ secrets.K8S_AGENTS_E2E_API_KEY }}
+          license_key: ${{ secrets.K8S_AGENTS_E2E_LICENSE_KEY }}

@@ -1,0 +1,54 @@
+{{- if .Values.cronjob.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-cronjob
+spec:
+  concurrencyPolicy: Allow
+  {{- if .Values.demo.enabled }}
+  schedule: "*/5 * * * *"
+  {{- else }}
+  schedule: "* * * * *"
+  {{- end }}
+  suspend: false
+  startingDeadlineSeconds: 200
+  jobTemplate:
+    spec:
+      parallelism: 1
+      completions: 1
+      activeDeadlineSeconds: 540
+      backoffLimit: 6
+      template:
+        metadata:
+          labels:
+            app: cronjob
+        spec:
+          containers:
+          - name: compute-pi-digits
+            image: perl:5.34.0
+            imagePullPolicy: IfNotPresent
+            resources:
+              requests:
+                cpu: 40m
+                memory: 15Mi
+              limits:
+                cpu: 80m
+                memory: 30Mi
+            command:
+            - perl
+            - -Mbignum=bpi
+            - -wle
+            {{- if .Values.demo.enabled }}
+            - open(FH, '>', '/output/{{ .Values.fileSystemTest.fileName }}') or die "Cannot open file - $!"; print FH bpi(100); close(FH); print bpi(4000)
+            {{- else }}
+            - open(FH, '>', '/output/{{ .Values.fileSystemTest.fileName }}') or die "Cannot open file - $!"; print FH bpi(100); close(FH); print bpi(1500)
+            {{- end }}
+            volumeMounts:
+              - mountPath: /output
+                name: storage
+          restartPolicy: OnFailure
+          volumes:
+            - name: storage
+              emptyDir: 
+                sizeLimit: 30Mi
+{{- end }}

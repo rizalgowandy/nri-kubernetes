@@ -2,50 +2,83 @@ package client
 
 import (
 	"fmt"
-	"net/http"
-	"net/url"
-	"path"
 	"time"
 
-	"github.com/newrelic/infra-integrations-sdk/log"
-	"github.com/newrelic/nri-kubernetes/v2/src/prometheus"
+	"github.com/sethgrid/pester"
+	log "github.com/sirupsen/logrus"
+
+	"github.com/newrelic/nri-kubernetes/v3/internal/logutil"
+	"github.com/newrelic/nri-kubernetes/v3/src/client"
+	"github.com/newrelic/nri-kubernetes/v3/src/prometheus"
 )
 
-// ksm implements Client interface
-type ksm struct {
-	httpClient *http.Client
-	endpoint   url.URL
-	nodeIP     string
-	logger     log.Logger
+// Client implements a client for KSM, capable of retrieving prometheus metrics from a given endpoint.
+type Client struct {
+	// http is an HttpDoer that the KSM client will use to make requests.
+	http    client.HTTPDoer
+	logger  *log.Logger
+	retries int
+	timeout time.Duration
 }
 
-func newKSMClient(timeout time.Duration, nodeIP string, endpoint url.URL, logger log.Logger) *ksm {
-	return &ksm{
-		nodeIP:   nodeIP,
-		endpoint: endpoint,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
-		logger: logger,
+type OptionFunc func(kc *Client) error
+
+// WithLogger returns an OptionFunc to change the logger from the default noop logger.
+func WithLogger(logger *log.Logger) OptionFunc {
+	return func(kc *Client) error {
+		kc.logger = logger
+		return nil
 	}
 }
 
-func (c *ksm) NodeIP() string {
-	return c.nodeIP
+// WithTimeout returns an OptionFunc to change the timeout for Pester Client.
+func WithTimeout(timeout time.Duration) OptionFunc {
+	return func(kubeletClient *Client) error {
+		kubeletClient.timeout = timeout
+		return nil
+	}
 }
 
-// Get implements HTTPGetter interface by sending Prometheus plain text request using configured client.
-func (c *ksm) Get(urlPath string) (*http.Response, error) {
-	e := c.endpoint
-	e.Path = path.Join(c.endpoint.Path, urlPath)
+// WithMaxRetries returns an OptionFunc to change the number of retries for Pester Client.
+func WithMaxRetries(retries int) OptionFunc {
+	return func(kubeletClient *Client) error {
+		kubeletClient.retries = retries
+		return nil
+	}
+}
 
-	// Creates Prometheus request.
-	r, err := prometheus.NewRequest(e.String())
-	if err != nil {
-		return nil, fmt.Errorf("Error creating request to: %s. Got error: %s ", e.String(), err)
+// New builds a Client using the given options. By default, it will use pester as an HTTP Doer and a noop logger.
+func New(opts ...OptionFunc) (*Client, error) {
+	k := &Client{
+		logger: logutil.Discard,
 	}
 
-	c.logger.Debugf("Calling kube-state-metrics endpoint: %s", r.URL.String())
+	for i, opt := range opts {
+		if err := opt(k); err != nil {
+			return nil, fmt.Errorf("applying option #%d: %w", i, err)
+		}
+	}
 
-	return c.httpClient.Do(r)
+	httpPester := pester.New()
+	httpPester.Backoff = pester.LinearBackoff
+	httpPester.MaxRetries = k.retries
+	httpPester.Timeout = k.timeout
+	httpPester.LogHook = func(e pester.ErrEntry) {
+		k.logger.Debugf("getting data from ksm: %v", e)
+	}
+	k.http = httpPester
+
+	return k, nil
+}
+
+// MetricFamiliesGetFunc returns a function that obtains metric families from a list of prometheus queries.
+func (c *Client) MetricFamiliesGetFunc(url string) prometheus.FetchAndFilterMetricsFamilies {
+	return func(queries []prometheus.Query) ([]prometheus.MetricFamily, error) {
+		mFamily, err := prometheus.GetFilteredMetricFamilies(c.http, url, queries, c.logger)
+		if err != nil {
+			return nil, fmt.Errorf("getting filtered metric families: %w", err)
+		}
+
+		return mFamily, nil
+	}
 }

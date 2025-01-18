@@ -1,0 +1,63 @@
+pending:
+  # -- Enable crashing and pending pods
+  enabled: true
+
+cronjob:
+  # -- Deploy a dummy cronjob
+  enabled: true
+
+failingJob:
+  # -- Deploy a failing job
+  enabled: true
+
+daemonSet:
+  # -- Deploy a dummy daemonSet
+  enabled: true
+
+statefulSet:
+  # -- Deploy a dummy statefulSet
+  enabled: true
+
+deployment:
+  # -- Deploy a dummy deployment
+  enabled: true
+
+hpa:
+  # -- Enable hpa resources
+  enabled: true
+
+persistentVolume:
+  # -- Create PVs
+  enabled: true
+  # -- Changes PV type to run on multi-node clusters (e.g. GKE, OpenShift on GCP)
+  multiNode: false
+persistentVolumeClaim:
+  # -- Create PVCs
+  enabled: true
+
+loadBalancerService:
+  # -- Deploy a loadBalancer service
+  enabled: true
+  annotations: {}
+  # -- If set, will deploy service with a loadBalancerIP set to this value
+  fakeIP: ""
+
+scraper:
+  # -- Deploy the scraper pod
+  enabled: false
+
+demo:
+  # -- Deploy in demo mode.
+  # Make entities consume non-negligible resources so metrics can be easily observed in the dashboards.
+  # This setting only applies to resources that would negatively impact testing times if enabled by default
+  enabled: false
+
+# -- Variables for filesystem testing
+fileSystemTest:
+  fileName: 'pi.txt'
+
+# Changes resource yaml files for running on OpenShift & MiniShift
+# OpenShift currently only runs on in demo mode
+openShift: 
+  enabled: false
+

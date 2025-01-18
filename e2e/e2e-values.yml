@@ -1,22 +1,5 @@
-newrelic-infrastructure:
-  verboseLog: true
-  image:
+images:
+  integration:
     pullPolicy: Never
     tag: e2e
-    repository: e2e/newrelic-infrastructure
-  resources:
-    limits:
-      cpu: 500m
-      memory: 300M
-    requests:
-      cpu: 100m
-      memory: 150M
-  apiServerEndpointUrl: https://localhost:8443
-  schedulerEndpointUrl: https://localhost:10259
-  controllerManagerEndpointUrl: https://localhost:10257
-
-ksm:
-  enabled: true
-
-webhook:
-  enabled: false
+    repository: e2e/nri-kubernetes

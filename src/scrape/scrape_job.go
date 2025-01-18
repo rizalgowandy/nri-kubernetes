@@ -2,38 +2,54 @@ package scrape
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 
 	"github.com/newrelic/infra-integrations-sdk/integration"
-	"github.com/newrelic/infra-integrations-sdk/log"
+	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/version"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/data"
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/internal/discovery"
+	"github.com/newrelic/nri-kubernetes/v3/src/data"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
 )
 
+// JobOpt are options that can be used to configure the ScrapeJob
+type JobOpt func(s *Job)
+
 // NewScrapeJob creates a new Scrape Job with the given attributes
-func NewScrapeJob(name string, grouper data.Grouper, specs definition.SpecGroups) *Job {
-	return &Job{
+func NewScrapeJob(name string, grouper data.Grouper, specs definition.SpecGroups, options ...JobOpt) *Job {
+	job := &Job{
 		Name:    name,
 		Grouper: grouper,
 		Specs:   specs,
 	}
+
+	for _, opt := range options {
+		opt(job)
+	}
+
+	return job
 }
 
 // Job hold all information specific to a certain Scrape Job, e.g.: where do I get the data from, and what data
 type Job struct {
-	Name    string
-	Grouper data.Grouper
-	Specs   definition.SpecGroups
+	Name     string
+	Grouper  data.Grouper
+	Specs    definition.SpecGroups
+	Filterer discovery.NamespaceFilterer
+}
+
+// JobWithFilterer returns an OptionFunc to add a Filterer.
+func JobWithFilterer(filterer discovery.NamespaceFilterer) JobOpt {
+	return func(j *Job) {
+		j.Filterer = filterer
+	}
 }
 
 // Populate will get the data using the given Group, transform it, and push it to the given Integration
 func (s *Job) Populate(
 	i *integration.Integration,
 	clusterName string,
-	logger log.Logger,
+	logger *log.Logger,
 	k8sVersion *version.Info,
 ) data.PopulateResult {
 	groups, errs := s.Grouper.Group(s.Specs)
@@ -44,7 +60,7 @@ func (s *Job) Populate(
 			}
 		}
 
-		logger.Warnf("%s", errs)
+		logger.Tracef("%s", errs)
 	}
 
 	config := &definition.IntegrationPopulateConfig{
@@ -52,8 +68,9 @@ func (s *Job) Populate(
 		ClusterName:   clusterName,
 		K8sVersion:    k8sVersion,
 		Specs:         s.Specs,
-		MsTypeGuesser: k8sMetricSetTypeGuesser,
+		MsTypeGuesser: definition.K8sMetricSetTypeGuesser,
 		Groups:        groups,
+		Filterer:      s.Filterer,
 	}
 	ok, populateErrs := definition.IntegrationPopulator(config)
 
@@ -69,13 +86,4 @@ func (s *Job) Populate(
 	}
 
 	return data.PopulateResult{Populated: true}
-}
-
-// k8sMetricSetTypeGuesser is the metric set type guesser for k8s integrations.
-func k8sMetricSetTypeGuesser(_, groupLabel, _ string, _ definition.RawGroups) (string, error) {
-	var sampleName string
-	for _, s := range strings.Split(groupLabel, "-") {
-		sampleName += strings.Title(s)
-	}
-	return fmt.Sprintf("K8s%vSample", sampleName), nil
 }

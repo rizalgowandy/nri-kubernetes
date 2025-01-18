@@ -3,37 +3,45 @@ package testdata
 import (
 	"time"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
 )
 
 // ExpectedRawData is the expectation for main fetch_test tests.
 var ExpectedRawData = definition.RawGroups{
 	"pod": {
 		"kube-system_kube-controller-manager-minikube": {
-			"nodeName":    "minikube",
-			"isReady":     "True",
-			"isScheduled": "True",
-			"nodeIP":      "192.168.99.100",
-			"podIP":       "10.0.2.15",
-			"labels":      map[string]string{"k8s-app": "kube-controller-manager", "component": "kube-controller-manager", "tier": "control-plane"},
-			"namespace":   "kube-system",
-			"podName":     "kube-controller-manager-minikube",
-			"status":      "Running",
-			"startTime":   parseTime("2019-10-23T17:10:48Z"),
+			"nodeName":          "minikube",
+			"isReady":           "True",
+			"isScheduled":       "True",
+			"nodeIP":            "192.168.99.100",
+			"podIP":             "10.0.2.15",
+			"labels":            map[string]string{"k8s-app": "kube-controller-manager", "component": "kube-controller-manager", "tier": "control-plane"},
+			"namespace":         "kube-system",
+			"podName":           "kube-controller-manager-minikube",
+			"status":            "Running",
+			"startTime":         parseTime("2019-10-23T17:10:48Z"),
+			"containersReadyAt": parseTime("2019-10-23T17:10:49Z"),
+			"initializedAt":     parseTime("2019-10-23T17:10:48Z"),
+			"readyAt":           parseTime("2019-10-23T17:10:49Z"),
+			"scheduledAt":       parseTime("2019-10-23T17:10:48Z"),
 		},
 		"kube-system_newrelic-infra-rz225": {
-			"createdKind": "DaemonSet",
-			"createdBy":   "newrelic-infra",
-			"nodeIP":      "192.168.99.100",
-			"podIP":       "172.17.0.3",
-			"namespace":   "kube-system",
-			"podName":     "newrelic-infra-rz225",
-			"nodeName":    "minikube",
-			"startTime":   parseTime("2018-02-14T16:26:33Z"),
-			"status":      "Running",
-			"isReady":     "True",
-			"isScheduled": "True",
-			"createdAt":   parseTime("2018-02-14T16:26:33Z"),
+			"createdKind":   "DaemonSet",
+			"createdBy":     "newrelic-infra",
+			"nodeIP":        "192.168.99.100",
+			"podIP":         "172.17.0.3",
+			"namespace":     "kube-system",
+			"daemonsetName": "newrelic-infra",
+			"podName":       "newrelic-infra-rz225",
+			"nodeName":      "minikube",
+			"startTime":     parseTime("2018-02-14T16:26:33Z"),
+			"status":        "Running",
+			"isReady":       "True",
+			"isScheduled":   "True",
+			"createdAt":     parseTime("2018-02-14T16:26:33Z"),
+			"initializedAt": parseTime("2018-02-14T16:26:33Z"),
+			"readyAt":       parseTime("2018-02-27T15:21:18Z"),
+			"scheduledAt":   parseTime("2018-02-14T16:27:00Z"),
 			"labels": map[string]string{
 				"controller-revision-hash": "3887482659",
 				"name":                     "newrelic-infra",
@@ -52,6 +60,7 @@ var ExpectedRawData = definition.RawGroups{
 			"isScheduled":    "True",
 			"createdAt":      parseTime("2018-02-14T16:27:38Z"),
 			"deploymentName": "kube-state-metrics",
+			"replicasetName": "kube-state-metrics-57f4659995",
 			"labels": map[string]string{
 				"k8s-app":           "kube-state-metrics",
 				"pod-template-hash": "1390215551",
@@ -70,6 +79,7 @@ var ExpectedRawData = definition.RawGroups{
 			"createdAt":      parseTime("2019-03-13T07:59:00Z"),
 			"startTime":      parseTime("2019-03-13T07:59:00Z"),
 			"deploymentName": "sh",
+			"replicasetName": "sh-7c95664875",
 			"labels": map[string]string{
 				"pod-template-hash": "3751220431",
 				"run":               "sh",
@@ -82,6 +92,7 @@ var ExpectedRawData = definition.RawGroups{
 			"containerImage": "newrelic/ohaik:1.0.0-beta3",
 			"namespace":      "kube-system",
 			"podName":        "newrelic-infra-rz225",
+			"daemonsetName":  "newrelic-infra",
 			"nodeName":       "minikube",
 			"nodeIP":         "192.168.99.100",
 			"restartCount":   int32(6),
@@ -103,6 +114,7 @@ var ExpectedRawData = definition.RawGroups{
 			"containerImage": "quay.io/coreos/kube-state-metrics:v1.1.0",
 			"namespace":      "kube-system",
 			"podName":        "kube-state-metrics-57f4659995-6n2qq",
+			"replicasetName": "kube-state-metrics-57f4659995",
 			"nodeName":       "minikube",
 			"nodeIP":         "192.168.99.100",
 			// "restartCount":   int32(7),  // No restartCount since there is no restartCount in status field in the pod.
@@ -124,6 +136,7 @@ var ExpectedRawData = definition.RawGroups{
 			"containerImage": "gcr.io/google_containers/addon-resizer:1.0",
 			"namespace":      "kube-system",
 			"podName":        "kube-state-metrics-57f4659995-6n2qq",
+			"replicasetName": "kube-state-metrics-57f4659995",
 			"nodeName":       "minikube",
 			"nodeIP":         "192.168.99.100",
 			// "restartCount":   int32(7),  // No restartCount since there is no restartCount in status field in the pod.
@@ -146,6 +159,7 @@ var ExpectedRawData = definition.RawGroups{
 			"containerImage": "python",
 			"namespace":      "default",
 			"podName":        "sh-7c95664875-4btqh",
+			"replicasetName": "sh-7c95664875",
 			"nodeName":       "minikube",
 			"nodeIP":         "192.168.99.100",
 			"deploymentName": "sh",

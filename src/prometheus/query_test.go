@@ -4,80 +4,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	model "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/protobuf/proto"
 )
-
-type ksm struct {
-	nodeIP string
-}
-
-func (c *ksm) Get(path string) (*http.Response, error) {
-	f, err := os.Open("testdata/metrics_plain.txt")
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close() // nolint: errcheck
-
-	w := httptest.NewRecorder()
-
-	io.Copy(w, f) // nolint: errcheck
-
-	return w.Result(), nil
-}
-
-func (c *ksm) NodeIP() string {
-	return c.nodeIP
-}
-
-func TestGet(t *testing.T) {
-	// TODO create or use an agnostic test sample.
-	c := ksm{
-		nodeIP: "1.2.3.4",
-	}
-
-	queryMetricName := "kube_pod_status_phase"
-	queryLabels := Labels{
-		"namespace": "default",
-		"pod":       "smoya-ghtop-6878dbdcc4-x2c5f",
-	}
-
-	queries := []Query{
-		{
-			MetricName: queryMetricName,
-			Labels: QueryLabels{
-				Labels: queryLabels,
-			},
-			Value: QueryValue{
-				Value: GaugeValue(1),
-			},
-		},
-	}
-
-	expectedLabels := queryLabels
-	expectedLabels["phase"] = "Running"
-	expectedMetrics := []MetricFamily{
-		{
-			Name: queryMetricName,
-			Type: "GAUGE",
-			Metrics: []Metric{
-				{
-					Labels: expectedLabels,
-					Value:  GaugeValue(1),
-				},
-			},
-		},
-	}
-
-	m, err := Do(&c, "", queries)
-	assert.NoError(t, err)
-
-	assert.Equal(t, expectedMetrics, m)
-}
 
 func TestLabelsAreIn(t *testing.T) {
 	expectedLabels := Labels{
@@ -255,4 +187,73 @@ func TestQueryMatch_CustomName(t *testing.T) {
 	}
 
 	assert.Equal(t, expectedMetrics, q.Execute(&r))
+}
+
+//nolint:bodyclose
+func TestParseResponse(t *testing.T) {
+	t.Parallel()
+
+	chOne := make(chan *model.MetricFamily)
+	chTwo := make(chan *model.MetricFamily)
+
+	handlerOne := func(w http.ResponseWriter) {
+		_, err := io.WriteString(w,
+			`# HELP kube_pod_status_phase The pods current phase. 
+			 # TYPE kube_pod_status_phase gauge
+			 kube_pod_status_phase{namespace="default",pod="123456789"} 1
+			 # HELP kube_custom_elasticsearch_health_status Elasticsearch CRD health status
+			 # TYPE kube_custom_elasticsearch_health_status stateset
+			 kube_custom_elasticsearch_health_status {customresource_group="elasticsearch.k8s.elastic.co"} 1
+			`)
+		assert.Nil(t, err)
+	}
+	handlerTwo := func(w http.ResponseWriter) {
+		_, err := io.WriteString(w,
+			`# HELP kube_custom_elasticsearch_health_status Elasticsearch CRD health status
+			 # TYPE kube_custom_elasticsearch_health_status stateset
+			 kube_custom_elasticsearch_health_status {customresource_group="elasticsearch.k8s.elastic.co"} 1
+			 # HELP kube_pod_status_phase The pods current phase.
+			 # TYPE kube_pod_status_phase gauge
+			 kube_pod_status_phase{namespace="default",pod="123456789"} 1
+			`)
+		assert.Nil(t, err)
+	}
+
+	wOne := httptest.NewRecorder()
+	wTwo := httptest.NewRecorder()
+
+	handlerOne(wOne)
+	handlerTwo(wTwo)
+	responseOne := wOne.Result()
+	responseTwo := wTwo.Result()
+
+	defer responseOne.Body.Close()
+	defer responseTwo.Body.Close()
+
+	var errOne error
+	var errTwo error
+	go func() {
+		errOne = parseResponse(responseOne, chOne)
+	}()
+	go func() {
+		errTwo = parseResponse(responseTwo, chTwo)
+	}()
+
+	var oneFamilies int
+	var twoFamilies int
+	for mf := range chOne {
+		_ = mf
+		oneFamilies++
+	}
+	for mf := range chTwo {
+		_ = mf
+		twoFamilies++
+	}
+
+	// Parse response will keep filling the channel until
+	// it encounters some sort of error.
+	assert.Equal(t, 1, oneFamilies)
+	assert.Equal(t, 0, twoFamilies)
+	assert.NotNil(t, errOne)
+	assert.NotNil(t, errTwo)
 }

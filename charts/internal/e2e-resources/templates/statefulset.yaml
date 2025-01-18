@@ -1,0 +1,68 @@
+{{- if .Values.statefulSet.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-statefulset
+  labels:
+    app: statefulset
+spec:
+  selector:
+    app: statefulset
+  ports:
+    - port: 8089
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-statefulset
+spec:
+  serviceName: statefulset
+  replicas: 2
+  selector:
+    matchLabels:
+      app: statefulset
+  template:
+    metadata:
+      labels:
+        app: statefulset
+    spec:
+      {{- if .Values.openShift.enabled }}
+      serviceAccountName: nri-bundle-sa
+      {{- end }}
+      containers:
+        - name: compute-pi-digits
+          image: perl:5.34.0
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 40m
+              memory: 15Mi
+            limits:
+              cpu: 80m
+              memory: 30Mi
+          command:
+          - perl
+          - -Mbignum=bpi
+          - -wle
+          - 'while (1) { open(FH, ">", "/output/{{ .Values.fileSystemTest.fileName }}") or die "Cannot open file - $!"; print FH bpi(100); close(FH); print bpi(2700) }'
+          volumeMounts:
+            - mountPath: /output
+              name: storage
+        {{- if .Values.demo.enabled }}
+        - name: failing-container
+          image: docker.io/library/bash:5
+          command: ["bash"]
+          args:
+          - -c
+          - echo "Hello world! I'm going to exit with 42 to simulate a software bug." && sleep 300 && exit 42
+        {{- end }}
+      volumes:
+        - name: storage
+        {{- if .Values.persistentVolumeClaim.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-pv-claim
+        {{- else }}
+          emptyDir:
+            sizeLimit: 30Mi
+        {{- end }}
+{{- end }}

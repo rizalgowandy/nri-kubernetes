@@ -6,12 +6,12 @@ import (
 	"math"
 	"testing"
 
-	"github.com/newrelic/infra-integrations-sdk/data/metric"
 	model "github.com/prometheus/client_model/go"
+
+	"github.com/newrelic/infra-integrations-sdk/data/metric"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
 )
 
 var mFamily = []MetricFamily{
@@ -275,22 +275,18 @@ var summaryRawGroups = definition.RawGroups{
 						SampleSum:   float64Ptr(45),
 						Quantile: []*model.Quantile{
 							{
-								Quantile:         float64Ptr(0.5),
-								Value:            float64Ptr(42),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.5),
+								Value:    float64Ptr(42),
 							},
 							{
-								Quantile:         float64Ptr(0.9),
-								Value:            float64Ptr(43),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.9),
+								Value:    float64Ptr(43),
 							},
 							{
-								Quantile:         float64Ptr(0.99),
-								Value:            float64Ptr(44),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.99),
+								Value:    float64Ptr(44),
 							},
 						},
-						XXX_unrecognized: nil,
 					},
 				}, {
 					Labels: Labels{"l2": "v2", "l1": "v1", "handler": "other"},
@@ -299,22 +295,18 @@ var summaryRawGroups = definition.RawGroups{
 						SampleSum:   float64Ptr(45),
 						Quantile: []*model.Quantile{
 							{
-								Quantile:         float64Ptr(0.5),
-								Value:            float64Ptr(42),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.5),
+								Value:    float64Ptr(42),
 							},
 							{
-								Quantile:         float64Ptr(0.9),
-								Value:            float64Ptr(43),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.9),
+								Value:    float64Ptr(43),
 							},
 							{
-								Quantile:         float64Ptr(0.99),
-								Value:            float64Ptr(44),
-								XXX_unrecognized: nil,
+								Quantile: float64Ptr(0.99),
+								Value:    float64Ptr(44),
 							},
 						},
-						XXX_unrecognized: nil,
 					},
 				},
 			},
@@ -334,22 +326,18 @@ var summaryMetricFamily = []MetricFamily{
 					SampleSum:   float64Ptr(45),
 					Quantile: []*model.Quantile{
 						{
-							Quantile:         float64Ptr(0.5),
-							Value:            float64Ptr(42),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.5),
+							Value:    float64Ptr(42),
 						},
 						{
-							Quantile:         float64Ptr(0.9),
-							Value:            float64Ptr(43),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.9),
+							Value:    float64Ptr(43),
 						},
 						{
-							Quantile:         float64Ptr(0.99),
-							Value:            float64Ptr(44),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.99),
+							Value:    float64Ptr(44),
 						},
 					},
-					XXX_unrecognized: nil,
 				},
 			},
 			{
@@ -359,22 +347,18 @@ var summaryMetricFamily = []MetricFamily{
 					SampleSum:   float64Ptr(45),
 					Quantile: []*model.Quantile{
 						{
-							Quantile:         float64Ptr(0.5),
-							Value:            float64Ptr(42),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.5),
+							Value:    float64Ptr(42),
 						},
 						{
-							Quantile:         float64Ptr(0.9),
-							Value:            float64Ptr(43),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.9),
+							Value:    float64Ptr(43),
 						},
 						{
-							Quantile:         float64Ptr(0.99),
-							Value:            float64Ptr(44),
-							XXX_unrecognized: nil,
+							Quantile: float64Ptr(0.99),
+							Value:    float64Ptr(44),
 						},
 					},
-					XXX_unrecognized: nil,
 				},
 			},
 		},
@@ -875,6 +859,92 @@ func TestFetchFuncs_CorrectValue(t *testing.T) {
 			},
 		},
 		{
+			name: "FromValueWithLabelsFilter skip aggregates value when no filter",
+			rawGroups: definition.RawGroups{
+				"scheduler": {
+					"kube-scheduler-minikube": {
+						"scheduler_pending_pods": []Metric{
+							{
+								Labels: Labels{"queue": "active"},
+								Value:  CounterValue(1),
+							},
+						},
+					},
+				},
+			},
+			fetchFunc: FromValueWithLabelsFilter(
+				"scheduler_pending_pods",
+				"",
+				IncludeOnlyWhenLabelMatchFilter(nil),
+			),
+			expectedFetchedValue: definition.FetchedValues{},
+		},
+		{
+			name: "FromValueWithLabelsFilter correct aggregates value with single filter",
+			rawGroups: definition.RawGroups{
+				"scheduler": {
+					"kube-scheduler-minikube": {
+						"scheduler_pending_pods": []Metric{
+							{
+								Labels: Labels{"queue": "active"},
+								Value:  CounterValue(1),
+							},
+							{
+								Labels: Labels{"queue": "backoff"},
+								Value:  CounterValue(2),
+							},
+							{
+								Labels: Labels{"queue": "active"},
+								Value:  CounterValue(4),
+							},
+						},
+					},
+				},
+			},
+			fetchFunc: FromValueWithLabelsFilter(
+				"scheduler_pending_pods",
+				"",
+				IncludeOnlyWhenLabelMatchFilter(map[string]string{"queue": "active"}),
+			),
+			expectedFetchedValue: definition.FetchedValues{
+				"scheduler_pending_pods": CounterValue(5),
+			},
+		},
+		{
+			name: "FromValueWithLabelsFilter correct aggregates values with multiple filters",
+			rawGroups: definition.RawGroups{
+				"scheduler": {
+					"kube-scheduler-minikube": {
+						"scheduler_pending_pods": []Metric{
+							{
+								Labels: Labels{"queue": "active"},
+								Value:  CounterValue(1),
+							},
+							{
+								Labels: Labels{"queue": "active", "l": "v2"},
+								Value:  CounterValue(2),
+							},
+							{
+								Labels: Labels{"queue": "backoff"},
+								Value:  CounterValue(1),
+							},
+						},
+					},
+				},
+			},
+			fetchFunc: FromValueWithLabelsFilter(
+				"scheduler_pending_pods",
+				"",
+				IncludeOnlyWhenLabelMatchFilter(map[string]string{
+					"queue": "active",
+					"l":     "v2",
+				}),
+			),
+			expectedFetchedValue: definition.FetchedValues{
+				"scheduler_pending_pods": CounterValue(3),
+			},
+		},
+		{
 			name: "FromSummary correct values with NaN and Infinite discarded",
 			rawGroups: definition.RawGroups{
 				"scheduler": {
@@ -887,22 +957,18 @@ func TestFetchFuncs_CorrectValue(t *testing.T) {
 									SampleSum:   float64Ptr(math.Inf(1)),
 									Quantile: []*model.Quantile{
 										{
-											Quantile:         float64Ptr(0.5),
-											Value:            float64Ptr(math.NaN()),
-											XXX_unrecognized: nil,
+											Quantile: float64Ptr(0.5),
+											Value:    float64Ptr(math.NaN()),
 										},
 										{
-											Quantile:         float64Ptr(0.9),
-											Value:            float64Ptr(math.NaN()),
-											XXX_unrecognized: nil,
+											Quantile: float64Ptr(0.9),
+											Value:    float64Ptr(math.NaN()),
 										},
 										{
-											Quantile:         float64Ptr(0.99),
-											Value:            float64Ptr(44),
-											XXX_unrecognized: nil,
+											Quantile: float64Ptr(0.99),
+											Value:    float64Ptr(44),
 										},
 									},
-									XXX_unrecognized: nil,
 								},
 							},
 						},
@@ -1222,7 +1288,7 @@ func TestFromLabelValueEntityTypeGenerator_EmptyPodNameForContainer(t *testing.T
 	}
 
 	generatedValue, err := FromLabelValueEntityTypeGenerator("kube_pod_container_info")("container", "kube-system_fluentd-elasticsearch-jnqb7_kube-state-metrics", raw, "clusterName")
-	assert.EqualError(t, err, "empty values for generated entity type for \"container\"")
+	assert.ErrorIs(t, err, ErrUnexpectedEmptyLabels)
 	assert.Equal(t, "", generatedValue)
 }
 
@@ -1241,7 +1307,7 @@ func TestFromLabelValueEntityTypeGenerator_EmptyNamespace(t *testing.T) {
 		},
 	}
 	generatedValue, err := FromLabelValueEntityTypeGenerator("kube_pod_start_time")("pod", "kube-system_fluentd-elasticsearch-jnqb7", raw, "clusterName")
-	assert.EqualError(t, err, "empty namespace for generated entity type for \"pod\"")
+	assert.ErrorIs(t, err, ErrUnexpectedEmptyLabels)
 	assert.Equal(t, "", generatedValue)
 }
 

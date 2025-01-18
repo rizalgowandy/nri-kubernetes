@@ -2,14 +2,19 @@ package definition
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/newrelic/infra-integrations-sdk/data/attribute"
 	"github.com/newrelic/infra-integrations-sdk/data/metric"
 	"github.com/newrelic/infra-integrations-sdk/integration"
+	"github.com/newrelic/nri-kubernetes/v3/internal/discovery"
 )
 
+const NamespaceGroup = "namespace"
+const NamespaceFilteredLabel = "nrFiltered"
+
 // GuessFunc guesses from data.
-type GuessFunc func(clusterName, groupLabel, entityID string, groups RawGroups) (string, error)
+type GuessFunc func(groupLabel string) (string, error)
 
 func populateCluster(i *integration.Integration, clusterName string, k8sVersion fmt.Stringer) error {
 	e, err := i.Entity(clusterName, "k8s:cluster")
@@ -18,14 +23,32 @@ func populateCluster(i *integration.Integration, clusterName string, k8sVersion 
 	}
 	ms := e.NewMetricSet("K8sClusterSample")
 
-	e.Inventory.SetItem("cluster", "name", clusterName)
+	err = e.Inventory.SetItem("cluster", "name", clusterName)
+	if err != nil {
+		return err
+	}
+
 	err = ms.SetMetric("clusterName", clusterName, metric.ATTRIBUTE)
 	if err != nil {
 		return err
 	}
 
 	k8sVersionStr := k8sVersion.String()
-	e.Inventory.SetItem("cluster", "k8sVersion", k8sVersionStr)
+	err = e.Inventory.SetItem("cluster", "k8sVersion", k8sVersionStr)
+	if err != nil {
+		return err
+	}
+
+	err = e.Inventory.SetItem("cluster", "newrelic.integrationVersion", i.IntegrationVersion)
+	if err != nil {
+		return err //nolint: wrapcheck
+	}
+
+	err = e.Inventory.SetItem("cluster", "newrelic.integrationName", i.Name)
+	if err != nil {
+		return err //nolint: wrapcheck
+	}
+
 	return ms.SetMetric("clusterK8sVersion", k8sVersionStr, metric.ATTRIBUTE)
 }
 
@@ -36,6 +59,7 @@ type IntegrationPopulateConfig struct {
 	MsTypeGuesser GuessFunc
 	Groups        RawGroups
 	Specs         SpecGroups
+	Filterer      discovery.NamespaceFilterer
 }
 
 // IntegrationPopulator populates an integration with the given metrics and definition.
@@ -44,11 +68,25 @@ func IntegrationPopulator(config *IntegrationPopulateConfig) (bool, []error) {
 	var errs []error
 	var msEntityType string
 	for groupLabel, entities := range config.Groups {
-		for entityID := range entities {
-
+		for entityID, metrics := range entities {
+			var extraAttributes []attribute.Attribute
 			// Only populate specified groups.
 			if _, ok := config.Specs[groupLabel]; !ok {
 				continue
+			}
+
+			if config.Filterer != nil {
+				if nsGetter := config.Specs[groupLabel].NamespaceGetter; nsGetter != nil {
+					ns := nsGetter(metrics)
+					if groupLabel != NamespaceGroup {
+						if !config.Filterer.IsAllowed(ns) {
+							continue
+						}
+					} else {
+						isFiltered := strconv.FormatBool(!config.Filterer.IsAllowed(ns))
+						extraAttributes = []attribute.Attribute{attribute.Attr(NamespaceFilteredLabel, isFiltered)}
+					}
+				}
 			}
 
 			msEntityID := entityID
@@ -76,14 +114,24 @@ func IntegrationPopulator(config *IntegrationPopulateConfig) (bool, []error) {
 				continue
 			}
 
-			// Add entity attributes, which will propagate to all metric.Sets.
-			// This was previously (on sdk v2) done by msManipulators.
-			e.AddAttributes(
+			extraAttributes = append(
+				extraAttributes,
 				attribute.Attr("clusterName", config.ClusterName),
 				attribute.Attr("displayName", e.Metadata.Name),
 			)
 
-			msType, err := config.MsTypeGuesser(config.ClusterName, groupLabel, entityID, config.Groups)
+			// Add entity attributes, which will propagate to all metric.Sets.
+			// This was previously (on sdk v2) done by msManipulators.
+			e.AddAttributes(
+				extraAttributes...,
+			)
+
+			msTypeGuesser := config.MsTypeGuesser
+			if customGuesser := config.Specs[groupLabel].MsTypeGuesser; customGuesser != nil {
+				msTypeGuesser = customGuesser
+			}
+
+			msType, err := msTypeGuesser(groupLabel)
 			if err != nil {
 				errs = append(errs, err)
 				continue

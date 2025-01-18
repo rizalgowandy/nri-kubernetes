@@ -1,0 +1,34 @@
+{{- if .Values.pending.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-container-creating
+  labels:
+    app: creating
+spec:
+  containers:
+    - name: alpine
+      image: alpine:latest
+      resources:
+        limits:
+          # Force a 'CreateContainerError':
+          # 'Error response from daemon: Minimum memory limit allowed is 6MB'
+          memory: 5M
+          cpu: 5m
+        requests:
+          memory: 5M
+          cpu: 5m
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-container-pending
+  labels:
+    app: pending
+spec:
+  containers:
+    - name: alpine
+      image: alpine:latest
+  nodeSelector:
+    not-existing: not-existing
+{{- end }}

@@ -6,15 +6,13 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/newrelic/infra-integrations-sdk/log"
+	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/client"
-	"github.com/newrelic/nri-kubernetes/v2/src/data"
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/src/client"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
 )
 
 // KubeletPodsPath is the path where kubelet serves information about pods.
@@ -25,14 +23,15 @@ const KubeletPodsPath = "/pods"
 // results and avoid querying the kubelet multiple times in the same
 // integration execution.
 type PodsFetcher struct {
-	once       sync.Once
-	cachedPods definition.RawGroups
-	fetchError error
-	logger     log.Logger
-	client     client.HTTPGetter
+	logger *log.Logger
+	client client.HTTPGetter
 }
 
-func (f *PodsFetcher) doPodsFetch() (definition.RawGroups, error) {
+// DoPodsFetch used to have a cache that was invalidated each execution of the integration
+// TODO: could we move this to informers?
+func (f *PodsFetcher) DoPodsFetch() (definition.RawGroups, error) {
+	f.logger.Debugf("Retrieving the list of pods")
+
 	r, err := f.client.Get(KubeletPodsPath)
 	if err != nil {
 		return nil, err
@@ -114,20 +113,8 @@ func (f *PodsFetcher) doPodsFetch() (definition.RawGroups, error) {
 	return raw, nil
 }
 
-// FetchFuncWithCache creates a data.FetchFunc that fetches data from the
-// kubelet pods path. The results are cached in memory, this means that
-// the cache is maintain per integration execution.
-func (f *PodsFetcher) FetchFuncWithCache() data.FetchFunc {
-	return func() (definition.RawGroups, error) {
-		f.once.Do(func() {
-			f.cachedPods, f.fetchError = f.doPodsFetch()
-		})
-		return f.cachedPods, f.fetchError
-	}
-}
-
 // NewPodsFetcher returns a new PodsFetcher.
-func NewPodsFetcher(l log.Logger, c client.HTTPGetter) *PodsFetcher {
+func NewPodsFetcher(l *log.Logger, c client.HTTPGetter) *PodsFetcher {
 	return &PodsFetcher{
 		logger: l,
 		client: c,
@@ -171,9 +158,9 @@ func (f *PodsFetcher) fetchContainersData(pod *v1.Pod) map[string]definition.Raw
 		}
 
 		if ref := pod.GetOwnerReferences(); len(ref) > 0 {
-			if d := deploymentNameBasedOnCreator(ref[0].Kind, ref[0].Name); d != "" {
-				metrics[id]["deploymentName"] = d
-			}
+			creatorKind := ref[0].Kind
+			creatorName := ref[0].Name
+			addWorkloadNameBasedOnCreator(creatorKind, creatorName, metrics[id])
 		}
 
 		// merging status data
@@ -218,22 +205,6 @@ func fillContainerStatuses(pod *v1.Pod, dest map[string]definition.RawMetrics) {
 	}
 }
 
-// Static pods are created by Kubelet on start time reading from static yaml files.
-// They contain the annotation: `"kubernetes.io/config.source": "file"`
-// Kubelet creates Mirror Pods in the K8s API that represents each static pod. They have a different pod ID than their Kubelet internal ones.
-//
-// For some reason, when the status of a static pod changes, Kubelet does not update the internal Pod status but the Mirror Pod.
-// Static Kubelet internal Pods statuses ‌are never updated, no matters the transition (Pending->Running->Succeeded…).
-//
-// This is a known bug in Kubelet. See https://github.com/kubernetes/kubernetes/issues/61717
-func isStaticPod(p *v1.Pod) bool {
-	if source, ok := p.GetAnnotations()["kubernetes.io/config.source"]; ok && source == "file" {
-		return true
-	}
-
-	return false
-}
-
 // isFakePendingPods returns true if a pod is a fake pending pod.
 // Pods that are created before having API server up are reported as Pending
 // in Kubelet /pods endpoint where in fact they are correctly running. This is a bug in Kubelet.
@@ -273,11 +244,11 @@ func (f *PodsFetcher) fetchPodData(pod *v1.Pod) definition.RawMetrics {
 	}
 
 	if ref := pod.GetOwnerReferences(); len(ref) > 0 {
-		metrics["createdKind"] = ref[0].Kind
-		metrics["createdBy"] = ref[0].Name
-		if d := deploymentNameBasedOnCreator(ref[0].Kind, ref[0].Name); d != "" {
-			metrics["deploymentName"] = d
-		}
+		creatorKind := ref[0].Kind
+		creatorName := ref[0].Name
+		metrics["createdKind"] = creatorKind
+		metrics["createdBy"] = creatorName
+		addWorkloadNameBasedOnCreator(creatorKind, creatorName, metrics)
 	}
 
 	if pod.Status.Reason != "" {
@@ -310,10 +281,32 @@ func (f *PodsFetcher) fillPodStatus(r definition.RawMetrics, pod *v1.Pod) {
 
 	for _, c := range pod.Status.Conditions {
 		switch c.Type {
+		case "Initialized":
+			if c.Status == "True" {
+				if !c.LastTransitionTime.IsZero() {
+					r["initializedAt"] = c.LastTransitionTime.In(time.UTC)
+				}
+			}
 		case "Ready":
 			r["isReady"] = string(c.Status)
+			if c.Status == "True" {
+				if !c.LastTransitionTime.IsZero() {
+					r["readyAt"] = c.LastTransitionTime.In(time.UTC)
+				}
+			}
+		case "ContainersReady":
+			if c.Status == "True" {
+				if !c.LastTransitionTime.IsZero() {
+					r["containersReadyAt"] = c.LastTransitionTime.In(time.UTC)
+				}
+			}
 		case "PodScheduled":
 			r["isScheduled"] = string(c.Status)
+			if c.Status == "True" {
+				if !c.LastTransitionTime.IsZero() {
+					r["scheduledAt"] = c.LastTransitionTime.In(time.UTC)
+				}
+			}
 		}
 	}
 
@@ -327,6 +320,24 @@ func podLabels(p *v1.Pod) map[string]string {
 	}
 
 	return labels
+}
+
+func addWorkloadNameBasedOnCreator(creatorKind string, creatorName string, metrics definition.RawMetrics) {
+	switch creatorKind {
+	case "DaemonSet":
+		metrics["daemonsetName"] = creatorName
+	case "Deployment":
+		metrics["deploymentName"] = creatorName
+	case "Job":
+		metrics["jobName"] = creatorName
+	case "ReplicaSet":
+		metrics["replicasetName"] = creatorName
+		if d := deploymentNameBasedOnCreator(creatorKind, creatorName); d != "" {
+			metrics["deploymentName"] = d
+		}
+	case "StatefulSet":
+		metrics["statefulsetName"] = creatorName
+	}
 }
 
 func deploymentNameBasedOnCreator(creatorKind, creatorName string) string {

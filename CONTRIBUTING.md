@@ -16,7 +16,24 @@ Before submitting an Issue, please search for similar ones in the
 
 1. Ensure any install or build dependencies are removed before the end of the layer when doing a build.
 2. Increase the version numbers in any examples files and the README.md to the new version that this Pull Request would represent. The versioning scheme we use is [SemVer](http://semver.org/).
-3. You may merge the Pull Request in once you have the sign-off of two other developers, or if you do not have permission to do that, you may request the second reviewer to merge it for you.
+3. Add an entry as an unordered list to the CHANGELOG under the `Unreleased` section under an L3 header that specifies the type of your PR. If there is no L3 header for your type of PR already in the Unreleased section, add a new L3 header. Include your github handle and a link to your PR in the entry. Here's an example of how it should look:
+    ```md
+      ## Unreleased
+
+      ### bugfix
+      - Fix some bug in some file @yourGithubHandle [#123](linkToThisPR)
+    ```
+
+  - Here are the accepted L3 headers (case sensitive)
+    + `breaking`
+    + `security`
+    + `enhancement`
+    + `bugfix`
+    + `dependency`
+  
+  - You can skip the changelog requirement by using the "Skip Changelog" label if your pull request is only updating files related to the CI/CD process or minor doc changes.
+
+4. You may merge the Pull Request in once you have the sign-off of one other developer, or if you do not have permission to do that, you may request the other reviewer to merge it for you.
 
 ## Contributor License Agreement
 
@@ -27,4 +44,4 @@ For more information about CLAs, please check out Alex Russell’s excellent pos
 
 ## Slack
 
-We host a public Slack with a dedicated channel for contributors and maintainers of open source projects hosted by New Relic.  If you are contributing to this project, you're welcome to request access to the #oss-contributors channel in the newrelicusers.slack.com workspace.  To request access, see https://newrelicusers-signup.herokuapp.com/.
+We host a public Slack with a dedicated channel for contributors and maintainers of open source projects hosted by New Relic. If you are contributing to this project, you're welcome to request access to the #oss-contributors channel in the newrelicusers.slack.com workspace. To request access, please use this [link](https://join.slack.com/t/newrelicusers/shared_invite/zt-1ayj69rzm-~go~Eo1whIQGYnu3qi15ng).

@@ -1,0 +1,22 @@
+clusterName: dummy_cluster
+interval: 15
+verbose: true
+
+sink:
+  http:
+    port: 0
+
+kubelet:
+  enabled: true
+  port: 123
+  scheme: http
+  networkRouteFile: /path/to/file
+
+ksm:
+  staticURL: http://test.com:8080
+  scheme: https
+  port: 8080
+  namespace: default
+  distributed: true
+  enabled: true
+  unexpected_field: unexpectedValue

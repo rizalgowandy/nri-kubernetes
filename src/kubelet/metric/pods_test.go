@@ -1,18 +1,17 @@
 package metric
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 
-	"github.com/sirupsen/logrus"
+	"github.com/newrelic/nri-kubernetes/v3/internal/logutil"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
-	"github.com/newrelic/nri-kubernetes/v2/src/kubelet/metric/testdata"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/src/kubelet/metric/testdata"
 )
 
 type testClient struct {
@@ -21,16 +20,15 @@ type testClient struct {
 
 func (c *testClient) Get(path string) (*http.Response, error) {
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	return c.Do(req)
+}
+
+func (c *testClient) Do(req *http.Request) (*http.Response, error) {
 	w := httptest.NewRecorder()
 
 	c.handler(w, req)
 
 	return w.Result(), nil
-}
-
-func (c *testClient) NodeIP() string {
-	// nothing to do
-	return ""
 }
 
 func servePayload(w http.ResponseWriter, _ *http.Request) {
@@ -44,40 +42,14 @@ func servePayload(w http.ResponseWriter, _ *http.Request) {
 	io.Copy(w, f) // nolint: errcheck
 }
 
-func serverPanic(w http.ResponseWriter, _ *http.Request) {
-	panic(fmt.Errorf("server panic"))
-}
-
 func TestFetchFunc(t *testing.T) {
 	c := testClient{
 		handler: servePayload,
 	}
 
-	f := NewPodsFetcher(logrus.StandardLogger(), &c)
-	g, err := f.FetchFuncWithCache()()
+	f := NewPodsFetcher(logutil.Debug, &c)
+	g, err := f.DoPodsFetch()
 
-	assert.NoError(t, err)
-	assert.Equal(t, testdata.ExpectedRawData, g)
-}
-
-func TestFetchFuncCache(t *testing.T) {
-	// Given an HTTPClient
-	c := testClient{
-		handler: servePayload,
-	}
-
-	// When calling the fetch pods func the results are cached
-	f := NewPodsFetcher(logrus.StandardLogger(), &c)
-	g, err := f.FetchFuncWithCache()()
-	assert.NoError(t, err)
-	assert.Equal(t, testdata.ExpectedRawData, g)
-
-	// Subsequent calls will use the cached data
-	c = testClient{
-		handler: serverPanic,
-	}
-	f.client = &c
-	g, err = f.FetchFuncWithCache()()
 	assert.NoError(t, err)
 	assert.Equal(t, testdata.ExpectedRawData, g)
 }
@@ -135,8 +107,8 @@ func assertError(t *testing.T, errorMessage string, handler http.HandlerFunc) {
 		handler: handler,
 	}
 
-	f := NewPodsFetcher(logrus.StandardLogger(), &c)
-	g, err := f.FetchFuncWithCache()()
+	f := NewPodsFetcher(logutil.Debug, &c)
+	g, err := f.DoPodsFetch()
 
 	assert.EqualError(t, err, errorMessage)
 	assert.Empty(t, g)

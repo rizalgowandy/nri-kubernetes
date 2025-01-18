@@ -11,17 +11,18 @@ import (
 	"github.com/newrelic/infra-integrations-sdk/data/event"
 	"github.com/newrelic/infra-integrations-sdk/data/inventory"
 	sdkMetric "github.com/newrelic/infra-integrations-sdk/data/metric"
-	"github.com/newrelic/infra-integrations-sdk/log"
+	"github.com/newrelic/nri-kubernetes/v3/internal/logutil"
+	"github.com/newrelic/nri-kubernetes/v3/internal/testutil"
 
 	"github.com/newrelic/infra-integrations-sdk/integration"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/version"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/data"
-	"github.com/newrelic/nri-kubernetes/v2/src/definition"
-	"github.com/newrelic/nri-kubernetes/v2/src/kubelet/metric/testdata"
-	"github.com/newrelic/nri-kubernetes/v2/src/metric"
+	"github.com/newrelic/nri-kubernetes/v3/src/data"
+	"github.com/newrelic/nri-kubernetes/v3/src/definition"
+	"github.com/newrelic/nri-kubernetes/v3/src/kubelet/metric/testdata"
+	"github.com/newrelic/nri-kubernetes/v3/src/metric"
 )
 
 func parseTime(raw string) time.Time {
@@ -64,6 +65,9 @@ var expectedEntities = []*integration.Entity{
 					"net.errorsPerSecond":            0.,
 					"createdAt":                      float64(parseTime("2018-02-14T16:26:33Z").Unix()),
 					"startTime":                      float64(parseTime("2018-02-14T16:26:33Z").Unix()),
+					"initializedAt":                  float64(parseTime("2018-02-14T16:26:33Z").Unix()),
+					"readyAt":                        float64(parseTime("2018-02-27T15:21:18Z").Unix()),
+					"scheduledAt":                    float64(parseTime("2018-02-14T16:27:00Z").Unix()),
 					"createdKind":                    "DaemonSet",
 					"createdBy":                      "newrelic-infra",
 					"nodeIP":                         "192.168.99.100",
@@ -72,6 +76,7 @@ var expectedEntities = []*integration.Entity{
 					"namespaceName":                  "kube-system",
 					"nodeName":                       "minikube",
 					"podName":                        "newrelic-infra-rz225",
+					"daemonsetName":                  "newrelic-infra",
 					"isReady":                        float64(1),
 					"status":                         "Running",
 					"isScheduled":                    float64(1),
@@ -95,38 +100,43 @@ var expectedEntities = []*integration.Entity{
 		Metrics: []*sdkMetric.Set{
 			{
 				Metrics: map[string]interface{}{
-					"event_type":            "K8sContainerSample",
-					"memoryUsedBytes":       float64(18083840),
-					"memoryWorkingSetBytes": float64(17113088),
-					"cpuUsedCores":          0.01742824,
-					"fsAvailableBytes":      float64(14924988416),
-					"fsUsedBytes":           float64(126976),
-					"fsUsedPercent":         0.0008507538914443524,
-					"fsCapacityBytes":       float64(17293533184),
-					"fsInodesFree":          float64(9713372),
-					"fsInodes":              float64(9732096),
-					"fsInodesUsed":          float64(36),
-					"containerName":         "newrelic-infra",
-					"containerID":           "69d7203a8f2d2d027ffa51d61002eac63357f22a17403363ef79e66d1c3146b2",
-					"containerImage":        "newrelic/ohaik:1.0.0-beta3",
-					"containerImageID":      "sha256:1a95d0df2997f93741fbe2a15d2c31a394e752fd942ec29bf16a44163342f6a1",
-					"namespace":             "kube-system",
-					"namespaceName":         "kube-system",
-					"podName":               "newrelic-infra-rz225",
-					"nodeName":              "minikube",
-					"nodeIP":                "192.168.99.100",
-					"restartCount":          float64(6),
-					"cpuRequestedCores":     0.1,
-					"memoryRequestedBytes":  float64(104857600),
-					"memoryLimitBytes":      float64(104857600),
-					"status":                "Running",
-					"isReady":               float64(1),
+					"event_type":                 "K8sContainerSample",
+					"memoryUsedBytes":            float64(18083840),
+					"memoryWorkingSetBytes":      float64(17113088),
+					"memoryUtilization":          float64(17.24609375),
+					"cpuUsedCores":               0.01742824,
+					"fsAvailableBytes":           float64(14924988416),
+					"fsUsedBytes":                float64(126976),
+					"fsUsedPercent":              0.0008507538914443524,
+					"fsCapacityBytes":            float64(17293533184),
+					"fsInodesFree":               float64(9713372),
+					"requestedMemoryUtilization": float64(17.24609375),
+					"fsInodes":                   float64(9732096),
+					"fsInodesUsed":               float64(36),
+					"containerName":              "newrelic-infra",
+					"containerID":                "69d7203a8f2d2d027ffa51d61002eac63357f22a17403363ef79e66d1c3146b2",
+					"containerImage":             "newrelic/ohaik:1.0.0-beta3",
+					"containerImageID":           "sha256:1a95d0df2997f93741fbe2a15d2c31a394e752fd942ec29bf16a44163342f6a1",
+					"namespace":                  "kube-system",
+					"namespaceName":              "kube-system",
+					"podName":                    "newrelic-infra-rz225",
+					"daemonsetName":              "newrelic-infra",
+					"nodeName":                   "minikube",
+					"nodeIP":                     "192.168.99.100",
+					"restartCount":               float64(6),
+					"restartCountDelta":          float64(0), // 0 the first time as it is PDELTA
+					"cpuRequestedCores":          0.1,
+					"memoryRequestedBytes":       float64(104857600),
+					"memoryLimitBytes":           float64(104857600),
+					"status":                     "Running",
+					"isReady":                    float64(1),
 					//"reason":               "",      // TODO ?
 					"displayName":                    "newrelic-infra", // From entity attributes
 					"clusterName":                    "test-cluster",   // From entity attributes
 					"label.controller-revision-hash": "3887482659",
 					"label.name":                     "newrelic-infra",
 					"label.pod-template-generation":  "1",
+					"requestedCpuCoresUtilization":   float64(17.42824),
 				},
 			},
 		},
@@ -141,35 +151,66 @@ var kubeletSpecs = definition.SpecGroups{
 	"container": metric.KubeletSpecs["container"],
 }
 
-type testGrouper struct{}
+// grouperMock implements Grouper interface returning mocked metrics which might change over subsequent calls.
+type grouperMock struct {
+	// ValuesInGroupCalls overwrite some metrics in subsequent calls using {"<path>": {subsequent-values} Examples:
+	// {"pod.kube-system_newrelic-infra-rz225.isReady": {0, 1, 2, 3}},
+	// {"container.kube-system_newrelic-infra-rz225.restartCount": {0, 1, 2, 3}}
+	ValuesInGroupCalls map[string][]interface{}
 
-func (tg *testGrouper) Group(definition.SpecGroups) (definition.RawGroups, *data.ErrorGroup) {
+	groupCallsCount int
+}
+
+func (g *grouperMock) Group(definition.SpecGroups) (definition.RawGroups, *data.ErrorGroup) {
 	// We reduce the test fixtures in order to simplify testing.
-	return definition.RawGroups{
-		"pod": {
-			"kube-system_newrelic-infra-rz225": testdata.ExpectedGroupData["pod"]["kube-system_newrelic-infra-rz225"],
-		},
-		"container": {
-			"kube-system_newrelic-infra-rz225_newrelic-infra": testdata.ExpectedGroupData["container"]["kube-system_newrelic-infra-rz225_newrelic-infra"],
-		},
-	}, nil
+	groupsDefinition := map[string]string{
+		"pod":       "kube-system_newrelic-infra-rz225",
+		"container": "kube-system_newrelic-infra-rz225_newrelic-infra",
+	}
+	groups := definition.RawGroups{}
+	for entityType, entityName := range groupsDefinition {
+		if groups[entityType] == nil {
+			groups[entityType] = map[string]definition.RawMetrics{}
+		}
+		groups[entityType][entityName] = g.metricsForCurrentCall(entityType, entityName)
+	}
+	g.groupCallsCount++
+	return groups, nil
+}
+
+// metricsForCurrentCall returns a copy of metrics from `testdata.ExpectedGroupData` corresponding to the provided
+// parameters with values changes as configured for the current group call.
+func (g *grouperMock) metricsForCurrentCall(entityType, entityName string) definition.RawMetrics {
+	metrics := definition.RawMetrics{}
+	for k, v := range testdata.ExpectedGroupData[entityType][entityName] {
+		metrics[k] = v
+	}
+	for rawPath, values := range g.ValuesInGroupCalls {
+		path := strings.Split(rawPath, ".")
+		lenValues := len(values)
+		if len(path) != 3 || path[0] != entityType || path[1] != entityName || lenValues < 1 {
+			continue
+		}
+		metricName := path[2]
+		valueToUse := g.groupCallsCount % lenValues
+		metrics[metricName] = values[valueToUse]
+	}
+	return metrics
 }
 
 func TestPopulateK8s(t *testing.T) {
-	intgr, err := integration.New("test", "test")
-	assert.NoError(t, err)
-	intgr.Clear()
+	t.Parallel()
+	intgr := testutil.NewIntegration(t)
 
-	testJob := NewScrapeJob("test", &testGrouper{}, kubeletSpecs)
+	testJob := NewScrapeJob("test", &grouperMock{}, kubeletSpecs)
 
 	k8sVersion := &version.Info{GitVersion: "v1.15.42"}
-	err = testJob.Populate(intgr, "test-cluster", log.NewStdErr(true), k8sVersion)
-	require.IsType(t, err, data.PopulateResult{})
-	assert.Empty(t, err.(data.PopulateResult).Errors)
+	errPopulate := testJob.Populate(intgr, "test-cluster", logutil.Debug, k8sVersion)
+	assert.Empty(t, errPopulate.Errors)
 
 	expectedInventory := inventory.New()
 
-	err = expectedInventory.SetItem("cluster", "name", expectedEntities[0].Metadata.Name)
+	err := expectedInventory.SetItem("cluster", "name", expectedEntities[0].Metadata.Name)
 	require.NoError(t, err)
 
 	err = expectedInventory.SetItem("cluster", "k8sVersion", k8sVersion.String())
@@ -189,7 +230,7 @@ func TestPopulateK8s(t *testing.T) {
 	sort.Slice(intgr.Entities, entitySliceLesser(intgr.Entities))
 	sort.Slice(expectedEntities, entitySliceLesser(expectedEntities))
 
-	compareIgnoreFields := cmpopts.IgnoreUnexported(integration.Entity{}, sdkMetric.Set{}, inventory.Inventory{})
+	compareIgnoreFields := cmpopts.IgnoreUnexported(integration.Entity{}, integration.EntityMetadata{}, sdkMetric.Set{}, inventory.Inventory{})
 	for j := range expectedEntities {
 		if diff := cmp.Diff(intgr.Entities[j], expectedEntities[j], compareIgnoreFields); diff != "" {
 			t.Errorf("Entities[%d] mismatch: %s", j, diff)
@@ -197,21 +238,34 @@ func TestPopulateK8s(t *testing.T) {
 	}
 }
 
-func TestK8sMetricSetTypeGuesser(t *testing.T) {
-	testCases := []struct {
-		groupLabel string
-		expected   string
-	}{
-		{groupLabel: "replicaset", expected: "K8sReplicasetSample"},
-		{groupLabel: "api-server", expected: "K8sApiServerSample"},
-		{groupLabel: "controller-manager", expected: "K8sControllerManagerSample"},
-		{groupLabel: "-controller-manager-", expected: "K8sControllerManagerSample"},
+func TestRestartCountDeltaValues(t *testing.T) {
+	t.Parallel()
+	intgr := testutil.NewIntegration(t)
+
+	expectedRestartCountDeltas := []float64{0, 3, 0, 1}
+
+	grouper := &grouperMock{
+		ValuesInGroupCalls: map[string][]interface{}{
+			"container.kube-system_newrelic-infra-rz225_newrelic-infra.restartCount": {0, 3, 3, 4},
+		},
 	}
-	for _, testCase := range testCases {
-		t.Run(testCase.groupLabel, func(*testing.T) {
-			guess, err := k8sMetricSetTypeGuesser("", testCase.groupLabel, "", nil)
-			assert.Nil(t, err)
-			assert.Equal(t, testCase.expected, guess)
-		})
+	testJob := NewScrapeJob("test", grouper, kubeletSpecs)
+
+	k8sVersion := &version.Info{GitVersion: "v1.15.42"}
+	// Populate data several times to check expected deltas
+	for i := 0; i < len(expectedRestartCountDeltas); i++ {
+		errPopulate := testJob.Populate(intgr, "test-cluster", logutil.Debug, k8sVersion)
+		assert.Empty(t, errPopulate.Errors)
+		time.Sleep(time.Second)
+	}
+
+	for _, entity := range intgr.Entities {
+		if entity.Metadata.Name == "newrelic-infra" {
+			lenExpectedDeltas := len(expectedRestartCountDeltas)
+			require.Equal(t, lenExpectedDeltas, len(entity.Metrics))
+			for i := 0; i < lenExpectedDeltas; i++ {
+				assert.Equal(t, expectedRestartCountDeltas[i], entity.Metrics[i].Metrics["restartCountDelta"])
+			}
+		}
 	}
 }

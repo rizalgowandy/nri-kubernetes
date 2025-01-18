@@ -1,31 +1,29 @@
 package main
 
 import (
-	"embed"
 	"fmt"
-	"io/fs"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	sdkArgs "github.com/newrelic/infra-integrations-sdk/args"
 	"github.com/newrelic/infra-integrations-sdk/integration"
-	"github.com/newrelic/infra-integrations-sdk/log"
-	"github.com/sirupsen/logrus"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/newrelic/nri-kubernetes/v2/src/apiserver"
-	"github.com/newrelic/nri-kubernetes/v2/src/client"
-	"github.com/newrelic/nri-kubernetes/v2/src/controlplane"
-	"github.com/newrelic/nri-kubernetes/v2/src/ksm"
-	"github.com/newrelic/nri-kubernetes/v2/src/kubelet"
-	kubeletmetric "github.com/newrelic/nri-kubernetes/v2/src/kubelet/metric"
-	"github.com/newrelic/nri-kubernetes/v2/src/metric"
-	"github.com/newrelic/nri-kubernetes/v2/src/scrape"
+	"github.com/newrelic/nri-kubernetes/v3/internal/config"
+	"github.com/newrelic/nri-kubernetes/v3/internal/discovery"
+	"github.com/newrelic/nri-kubernetes/v3/internal/testutil"
+	"github.com/newrelic/nri-kubernetes/v3/src/data"
+	ksmClient "github.com/newrelic/nri-kubernetes/v3/src/ksm/client"
+	ksmGrouper "github.com/newrelic/nri-kubernetes/v3/src/ksm/grouper"
+	kubeletClient "github.com/newrelic/nri-kubernetes/v3/src/kubelet/client"
+	kubeletGrouper "github.com/newrelic/nri-kubernetes/v3/src/kubelet/grouper"
+	kubeletmetric "github.com/newrelic/nri-kubernetes/v3/src/kubelet/metric"
+	"github.com/newrelic/nri-kubernetes/v3/src/metric"
+	"github.com/newrelic/nri-kubernetes/v3/src/scrape"
 )
 
 const (
@@ -39,254 +37,114 @@ type argumentList struct {
 
 var args argumentList
 
-// Embed static metrics into binary.
-//go:embed data
-var content embed.FS
-
 func main() {
 	// Determines which subdirectory of cmd/kubernetes-static/ to use
 	// for serving the static metrics
-	k8sMetricsVersion := os.Getenv("K8S_METRICS_VERSION")
-	if k8sMetricsVersion == "" {
-		k8sMetricsVersion = "1_18"
+	testData := testutil.LatestVersion()
+	if envVersion := os.Getenv("K8S_METRICS_VERSION"); envVersion != "" {
+		testData = testutil.Version(envVersion)
 	}
 
-	endpoint := startStaticMetricsServer(content, k8sMetricsVersion)
+	logger := log.StandardLogger()
+	if args.Verbose {
+		logger.SetLevel(log.DebugLevel)
+	}
 
-	integration, err := integration.New(integrationName, integrationVersion, integration.Args(&args))
+	testServer, err := testData.Server()
 	if err != nil {
-		logrus.Fatal(err)
+		logger.Fatalf("Error building testserver: %v", err)
 	}
 
-	logger := log.NewStdErr(args.Verbose)
+	k8sData, err := testutil.LatestVersion().K8s()
+	if err != nil {
+		logger.Fatalf("error instantiating fake k8s objects: %v", err)
+	}
 
-	// ApiServer
-	apiServerClient := apiserver.TestAPIServer{Mem: map[string]*apiserver.NodeInfo{
-		// this nodename should be the same as the ones in the data folder
-		"minikube": {
-			NodeName: "minikube",
-			Labels: map[string]string{
-				"node-role.kubernetes.io/master": "",
-			},
-			Conditions: []v1.NodeCondition{
-				{
-					Type:   "DiskPressure",
-					Status: v1.ConditionFalse,
-				},
-				{
-					Type:   "MemoryPressure",
-					Status: v1.ConditionFalse,
-				},
-				{
-					Type:   "DiskPressure",
-					Status: v1.ConditionFalse,
-				},
-				{
-					Type:   "PIDPressure",
-					Status: v1.ConditionFalse,
-				},
-				{
-					Type:   "Ready",
-					Status: v1.ConditionTrue,
-				},
-			},
-			Unschedulable: false,
-		},
-	}}
+	fakeK8s := fake.NewSimpleClientset(k8sData.Everything()...)
+
+	i, err := integration.New(integrationName, integrationVersion, integration.Args(&args), integration.InMemoryStore())
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	nodeGetter, closeChan := discovery.NewNodeLister(fakeK8s)
+	defer close(closeChan)
+
+	u, err := url.Parse(testServer.KubeletEndpoint())
+	if err != nil {
+		logger.Fatal(err)
+	}
 
 	// Kubelet
-	kubeletClient := newBasicHTTPClient(endpoint + "/kubelet")
-	podsFetcher := kubeletmetric.NewPodsFetcher(logger, kubeletClient)
-	kubeletGrouper := kubelet.NewGrouper(
-		kubeletClient,
-		logger,
-		apiServerClient,
-		"ens5",
-		podsFetcher.FetchFuncWithCache(),
-		kubeletmetric.CadvisorFetchFunc(kubeletClient, metric.CadvisorQueries))
-	// KSM
-	ksmClient := newBasicHTTPClient(endpoint + "/ksm")
-	k8sClient := &client.MockedKubernetes{}
-
-	serviceList := &v1.ServiceList{
-		Items: []v1.Service{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "kube-state-metrics",
-					Namespace: "kube-system",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cockroachdb",
-					Namespace: "default",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "metrics-server",
-					Namespace: "kube-system",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "kubernetes",
-					Namespace: "default",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "kube-dns",
-					Namespace: "kube-system",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cockroachdb-public",
-					Namespace: "default",
-				},
-				Spec: v1.ServiceSpec{
-					Selector: map[string]string{
-						"l1": "v1",
-						"l2": "v2",
-					},
-				},
-			},
-		},
+	kubeletClient, err := kubeletClient.New(
+		kubeletClient.StaticConnector(&http.Client{Timeout: time.Minute * 10}, *u),
+		kubeletClient.WithMaxRetries(config.DefaultRetries),
+	)
+	if err != nil {
+		logger.Fatal(err)
 	}
 
-	k8sClient.On("ListServices").Return(serviceList, nil)
-	ksmGrouper := ksm.NewGrouper(ksmClient, metric.KSMQueries, logger, k8sClient)
+	podsFetcher := kubeletmetric.NewPodsFetcher(logger, kubeletClient)
+	kubeletGrouper, err := kubeletGrouper.New(
+		kubeletGrouper.Config{
+			NodeGetter: nodeGetter,
+			Client:     kubeletClient,
+			Fetchers: []data.FetchFunc{
+				podsFetcher.DoPodsFetch,
+				kubeletmetric.CadvisorFetchFunc(kubeletClient.MetricFamiliesGetFunc(kubeletmetric.KubeletCAdvisorMetricsPath), metric.CadvisorQueries),
+			},
+			DefaultNetworkInterface: "ens5",
+		}, kubeletGrouper.WithLogger(logger))
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	kc, err := ksmClient.New(
+		ksmClient.WithLogger(logger),
+		ksmClient.WithTimeout(config.DefaultTimeout),
+		ksmClient.WithMaxRetries(config.DefaultRetries),
+	)
+	if err != nil {
+		logger.Fatal(err)
+	}
+
+	fakeLister, _ := discovery.NewServicesLister(fakeK8s)
+	kg, err := ksmGrouper.New(ksmGrouper.Config{
+		MetricFamiliesGetter: kc.MetricFamiliesGetFunc(testServer.KSMEndpoint()),
+		Queries:              metric.KSMQueries,
+		ServicesLister:       fakeLister,
+	}, ksmGrouper.WithLogger(logger))
+	if err != nil {
+		logger.Fatal(err)
+	}
 
 	jobs := []*scrape.Job{
 		scrape.NewScrapeJob("kubelet", kubeletGrouper, metric.KubeletSpecs),
-		scrape.NewScrapeJob("kube-state-metrics", ksmGrouper, metric.KSMSpecs),
+		scrape.NewScrapeJob("kube-state-metrics", kg, metric.KSMSpecs),
 	}
 
-	// controlPlaneComponentPods maps component.Name to the pod name
-	// found in the file `cmd/kubernetes-static/data/kubelet/pods`
-	controlPlaneComponentPods := map[controlplane.ComponentName]string{
-		controlplane.Scheduler:         "kube-scheduler-minikube",
-		controlplane.Etcd:              "etcd-minikube",
-		controlplane.ControllerManager: "kube-controller-manager-minikube",
-		controlplane.APIServer:         "kube-apiserver-minikube",
-	}
-
-	for _, component := range controlplane.BuildComponentList() {
-		componentGrouper := controlplane.NewComponentGrouper(
-			newBasicHTTPClient(fmt.Sprintf("%s/controlplane/%s", endpoint, component.Name)),
-			component.Queries,
-			logger,
-			controlPlaneComponentPods[component.Name],
-		)
-		jobs = append(
-			jobs,
-			scrape.NewScrapeJob(string(component.Name), componentGrouper, component.Specs),
-		)
-	}
+	// TODO add control plane scraper.
 
 	k8sVersion := &version.Info{GitVersion: "v1.18.19"}
 
 	for _, job := range jobs {
 
-		logrus.Infof("Starting job: %s", job.Name)
+		logger.Infof("Starting job: %s", job.Name)
 
-		result := job.Populate(integration, "test-cluster", logger, k8sVersion)
+		result := job.Populate(i, "test-cluster", logger, k8sVersion)
 
 		if result.Populated {
-			logrus.Infof("Successfully populated job: %s", job.Name)
+			logger.Infof("Successfully populated job: %s", job.Name)
 		}
 
 		if len(result.Errors) > 0 {
-			logrus.Warningf("Job %s ran with errors: %s", job.Name, result.Error())
+			logger.Warningf("Job %s ran with errors: %s", job.Name, result.Error())
 		}
 	}
 
-	if err := integration.Publish(); err != nil {
-		logrus.Fatalf("Error while publishing: %v", err)
+	if err := i.Publish(); err != nil {
+		logger.Fatalf("Error while publishing: %v", err)
 	}
 
 	fmt.Println()
-}
-
-func startStaticMetricsServer(content embed.FS, k8sMetricsVersion string) string {
-	listenAddress := "127.0.0.1:0"
-	// This will allocate a random port
-	listener, err := net.Listen("tcp", listenAddress)
-	if err != nil {
-		logrus.Fatalf("Error listening on %q: %v", listenAddress, err)
-	}
-
-	endpoint := fmt.Sprintf("http://%s", listener.Addr())
-	logrus.Infof("Hosting Mock Metrics data on %s", endpoint)
-
-	mux := http.NewServeMux()
-
-	path := filepath.Join("data", k8sMetricsVersion)
-	k8sContent, err := fs.Sub(content, path)
-	if err != nil {
-		logrus.Fatalf("Error taking a %q subtree of embedded data: %v", path, err)
-	}
-
-	mux.Handle("/", http.FileServer(http.FS(k8sContent)))
-	go func() {
-		logrus.Fatal(http.Serve(listener, mux))
-	}()
-
-	return endpoint
-}
-
-func newBasicHTTPClient(url string) *basicHTTPClient {
-	return &basicHTTPClient{
-		url: url,
-		httpClient: http.Client{
-			Timeout: time.Minute * 10, // high for debugging purposes
-		},
-	}
-}
-
-type basicHTTPClient struct {
-	url        string
-	httpClient http.Client
-}
-
-func (b basicHTTPClient) Get(path string) (*http.Response, error) {
-	endpoint := fmt.Sprintf("%s%s", b.url, path)
-	log.Info("Getting: %s", endpoint)
-
-	return b.httpClient.Get(endpoint)
-}
-
-func (b basicHTTPClient) NodeIP() string {
-	return "localhost"
 }
